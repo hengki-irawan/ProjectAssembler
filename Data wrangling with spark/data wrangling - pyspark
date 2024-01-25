@@ -1,0 +1,49 @@
+
+from pyspark.context import SparkContext
+from pyspark.sql.session import SparkSession
+from pyspark.sql import functions as F
+from pyspark.sql.window import Window
+
+sc = SparkContext('local')
+spark = SparkSession(sc)
+
+print("Spark job starts here")
+
+
+booking_data = spark.read.csv('./resource/booking_data.csv', header=True)
+passenger_data = spark.read.csv('./resource/passenger_data.csv', header=True)
+
+
+passenger_data.printSchema()
+
+
+# filling null country_code with "other" 
+passenger_data_new = passenger_data.selectExpr("CAST(id AS STRING)                                               AS id_passenger", 
+                                               "CAST(date_registered AS TIMESTAMP)                               AS date_registered",
+                                               "YEAR (date_registered)                                           AS year",
+                                               "CAST(MONTHS_BETWEEN(current_timestamp, date_registered) AS INT)  AS diff_month_to_date",
+                                               "UPPER(COALESCE(country_code, 'OTHER'))                           AS country_code")
+
+passenger_data_new.show()
+
+
+#total new customers
+total_new_customer = passenger_data_new.selectExpr("SUM(CASE WHEN diff_month_to_date < 4 THEN 1 ELSE 0 END) AS total_new_customer")
+total_new_customer.show()
+
+
+#getting_percentage of booking in poland
+all_data = booking_data.join(passenger_data_new, booking_data["id_passenger"] == passenger_data_new["id_passenger"], "left")
+all_data.selectExpr("ROUND(SUM(CASE WHEN country_code = 'PL' THEN 1 ELSE 0 END)/COUNT(1) * 100, 2) AS percentage_booked_pl").show()
+
+
+
+sorting_data = passenger_data_new.groupBy("year", "country_code").count()
+
+sorting_data = sorting_data.select("*", F.row_number().over(Window.partitionBy("year").orderBy(sorting_data["count"].desc())).alias("row_num")).where("row_num<=3")
+
+sorting_data = sorting_data.select("year", "country_code", "count", F.lead("count").over(Window.partitionBy("year").orderBy("year")).alias("lead")).fillna(0, subset=["lead"])
+
+
+
+sorting_data.selectExpr("year", "country_code", "count AS num", "CAST(count AS INT)-CAST(lead AS INT) AS diff").sort(F.col("year").asc(), F.col("count").desc(), "diff").show()
